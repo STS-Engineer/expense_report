@@ -7,8 +7,7 @@ app = Flask(__name__)
 
 UPLOAD_FOLDER = 'uploads'
 OUTPUT_FOLDER = 'outputs'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
 # Live currency API
 FIXER_API_URL = "http://data.fixer.io/api/latest"
 FIXER_API_KEY = "653aca7bac0ce92affcdcb0116ecbc0a"
