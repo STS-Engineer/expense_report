@@ -186,27 +186,9 @@ def convert_pdf_to_excel(pdf_path, output_filename):
             columns=["Labelle", "Date", "Frais", "Devis", "EUR", "Card"]
         )
 
-        # Summing EUR values for the same Labelle
-        summary = df.groupby("Labelle")["EUR"].sum().reset_index()
-        summary.rename(columns={"EUR": "Total EUR"}, inplace=True)
-
-        # Add summary rows under each group
+       
         df = df.sort_values(by="Labelle")
-        summary_rows = []
-        for labelle in df["Labelle"].unique():
-            group_rows = df[df["Labelle"] == labelle]
-            total_eur = group_rows["EUR"].sum()
-            summary_rows.append(group_rows)
-            summary_rows.append(pd.DataFrame({
-                "Labelle": [labelle],
-                "Date": ["Total"],
-                "Frais": [""],
-                "Devis": [""],
-                "EUR": [total_eur],
-                "Card": [""]
-            }))
-
-        df = pd.concat(summary_rows, ignore_index=True)
+     
 
     else:
         df = pd.DataFrame(columns=["Labelle", "Date", "Frais", "Devis", "EUR", "Card"])  # Empty DataFrame fallback
