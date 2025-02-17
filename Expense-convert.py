@@ -3,6 +3,10 @@ import os
 from PyPDF2 import PdfReader
 import pandas as pd
 import requests
+import fitz  # PyMuPDF for extracting images
+from openpyxl import load_workbook
+from openpyxl.drawing.image import Image as ExcelImage
+from openpyxl.styles import Font
 app = Flask(__name__)
 
 UPLOAD_FOLDER = 'uploads'
@@ -11,6 +15,8 @@ OUTPUT_FOLDER = 'outputs'
 # Live currency API
 FIXER_API_URL = "http://data.fixer.io/api/latest"
 FIXER_API_KEY = "653aca7bac0ce92affcdcb0116ecbc0a"
+
+
 @app.route('/')
 def home():
     return '''
@@ -88,14 +94,79 @@ def upload_file():
     file.save(file_path)
 
     try:
-        # Extract data and convert to Excel
+        # Extract data and convert to Excel (your existing functionality)
         extracted_data, excel_file_path = convert_pdf_to_excel(file_path, file.filename.replace('.pdf', '.xlsx'))
+
+        # Extract images and add them to the Excel file
+        image_files = extract_images_from_pdf(file_path)
+        if image_files:
+            add_images_to_excel(image_files, excel_file_path)
+            print(f"Extracted and added {len(image_files)} images to Excel.")
+
         return render_template_string(generate_response_html(extracted_data, excel_file_path))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+IMAGE_FOLDER = os.path.join(OUTPUT_FOLDER, 'images')
+os.makedirs(IMAGE_FOLDER, exist_ok=True)
+def extract_images_from_pdf(pdf_path):
+    """Extract images from a PDF and save them as files."""
+    doc = fitz.open(pdf_path)
+    image_paths = []
+
+    for page_number in range(len(doc)):
+        page = doc[page_number]
+        images = page.get_images(full=True)
+
+        for img_index, img in enumerate(images):
+            xref = img[0]
+            base_image = doc.extract_image(xref)
+            image_bytes = base_image["image"]
+            image_ext = base_image["ext"]
+
+            output_path = os.path.join(IMAGE_FOLDER, f'page-{page_number + 1}_image-{img_index + 1}.{image_ext}')
+            with open(output_path, "wb") as img_file:
+                img_file.write(image_bytes)
+            image_paths.append(output_path)
+
+    return image_paths
+
+def add_images_to_excel(image_files, excel_file_path):
+    """Embed images into separate sheets in an existing Excel file without duplication."""
+    workbook = load_workbook(excel_file_path)
+
+    added_images = set()  # Track added images to prevent duplicates
+
+    for index, image_path in enumerate(image_files, start=1):
+        if image_path in added_images:
+            continue  # Skip duplicate images
+
+        img = ExcelImage(image_path)
+        img.width, img.height = 300, 300  # Resize images for better visibility
+
+        sheet_name = f"Image {index}"
+        if sheet_name not in workbook.sheetnames:  # Ensure unique sheet names
+            image_sheet = workbook.create_sheet(title=sheet_name)
+
+            # Set header
+            image_sheet.append(["Extracted Image"])
+            image_sheet["A1"].font = Font(bold=True)
+
+            # Insert image
+            cell = "A3"  # Leave space for the header
+            image_sheet.add_image(img, cell)
+
+            # Adjust column width and row height
+            image_sheet.column_dimensions["A"].width = 50
+            image_sheet.row_dimensions[3].height = 200
+
+            added_images.add(image_path)  # Mark image as added
+
+    workbook.save(excel_file_path)
 
 def convert_pdf_to_excel(pdf_path, output_filename):
+    """Extracts structured data from a PDF and converts it to an Excel file."""
+
     reader = PdfReader(pdf_path)
     extracted_data = {"Labelle": None, "Department": None, "Object": None, "Table": []}
     import re
@@ -104,97 +175,76 @@ def convert_pdf_to_excel(pdf_path, output_filename):
         response = requests.get(FIXER_API_URL, params={"access_key": FIXER_API_KEY})
         response.raise_for_status()
         conversion_data = response.json()
-        print("Fetched conversion rates:", conversion_data)  # Debugging
         rates = conversion_data.get("rates", {})
+        print("Fetched conversion rates:", rates)  # Debugging
     except Exception as e:
         print(f"Failed to fetch conversion rates: {e}")
         rates = {}
 
     for page in reader.pages:
         text = page.extract_text()
+        if not text:
+            continue
         lines = text.split('\n')
-        print("Extracted Lines:", lines)  # Debugging: Print all lines extracted from the PDF
 
-        # Flag to detect when table starts
         headers_found = False
         for line in lines:
             # Extract Name and Department
             if "NAME" in line and "DEPARTMENT" in line:
-                match = re.search(r"NAME(.*?)DEPARTMENT(.*)", line)
+                match = re.search(r"NAME\s*(.*?)\s*DEPARTMENT\s*(.*)", line, re.IGNORECASE)
                 if match:
                     extracted_data["Labelle"] = match.group(1).strip()
                     extracted_data["Department"] = match.group(2).strip()
-                    print(f"Extracted Labelle: {extracted_data['Labelle']}, Department: {extracted_data['Department']}")
 
             # Extract Object
             if "OBJECT" in line:
-                match = re.search(r"OBJECT(.*)", line)
+                match = re.search(r"OBJECT\s*(.*)", line, re.IGNORECASE)
                 if match:
                     extracted_data["Object"] = match.group(1).strip()
-
-                # Append word before RESPONSIBLE
             elif "RESPONSIBLE" in line:
                 match = re.search(r"(\w+)\s+RESPONSIBLE", line)
                 if match:
                     word_before_responsible = match.group(1).strip()
-                    if extracted_data["Object"]:
-                        extracted_data["Object"] += f" {word_before_responsible}"
-                    else:
-                        extracted_data["Object"] = word_before_responsible
+                    extracted_data["Object"] = f"{extracted_data.get('Object', '')} {word_before_responsible}".strip()
+
+        # Process Table Data
         for line in lines:
-            # Detect the table header
-            if "Name DateFraisDevi" in line:
+            if "Type DateFraisDevi" in line:  # Detect table header
                 headers_found = True
-                print(f"Table header detected: {line}")
                 continue
 
-            # Process table rows
             if headers_found:
-                print(f"Processing potential table row: {line}")  # Debugging
-
-                # Skip invalid rows
                 if "Validation" in line or "Click here" in line or line.strip() == "":
-                    print(f"Skipping non-table row: {line}")
-                    continue
+                    continue  # Skip invalid rows
 
-                # Handle rows like "Plane 20 Dec 202430EUR"
+                # Regex to match table rows
                 match = re.match(r"(\w+)\s+(\d+\s+\w+\s+\d{4})(\d+)([a-zA-Z]{3})([a-zA-Z]+)", line)
                 if match:
-                    labelle = match.group(1)  # First column: Labelle
-                    date = match.group(2)  # Second column: Date
-                    frais = float(match.group(3))  # Third column: Frais
-                    devis = match.group(4).upper()  # Fourth column: Currency (e.g., "EUR", "USD", "TND")
-                    card = match.group(5)
+                    labelle, date, frais, devis, card = match.groups()
+                    frais = int(frais)
+                    devis = devis.upper()
+
                     # Convert Frais to EUR
-                    rate_to_eur = rates.get(devis, None)
-                    if rate_to_eur:
-                        converted_value = frais / rate_to_eur
-                    else:
-                        print(f"No rate found for currency {devis}, using original Frais")
-                        converted_value = frais  # Default to original Frais value
+                    converted_value = frais / rates.get(devis, 1.0)  # Default to original if no rate found
 
-                    # Add a placeholder for Card column
-                    extracted_data["Table"].append([labelle, date, frais, devis, round(converted_value, 2), card])  # Empty card
-                    print(f"Extracted Table Row: {[labelle, date, frais, devis, round(converted_value, 2), card]}")
+                    extracted_data["Table"].append([labelle, date, frais, devis, round(converted_value, 2), card])
                 else:
-                    print(f"Failed to parse row: {line}")
+                    print(f"Skipping unrecognized row: {line}")
 
-    # Convert the table to a DataFrame
+    # Convert extracted data to DataFrame
     if extracted_data["Table"]:
-        df = pd.DataFrame(
-            extracted_data["Table"],
-            columns=["Labelle", "Date", "Frais", "Devis", "EUR", "Card"]
-        )
-
-       
+        df = pd.DataFrame(extracted_data["Table"], columns=["Labelle", "Date", "Frais", "Devis", "EUR", "Card"])
         df = df.sort_values(by="Labelle")
-     
-
     else:
-        df = pd.DataFrame(columns=["Labelle", "Date", "Frais", "Devis", "EUR", "Card"])  # Empty DataFrame fallback
+        df = pd.DataFrame(columns=["Labelle", "Date", "Frais", "Devis", "EUR", "Card"])  # Empty fallback DataFrame
 
+    # Ensure output directory exists
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
+    # Save DataFrame to Excel
     output_path = os.path.join(OUTPUT_FOLDER, output_filename)
     df.to_excel(output_path, index=False)
+
     return extracted_data, output_path
 
 def generate_response_html(extracted_data, excel_file_path):
