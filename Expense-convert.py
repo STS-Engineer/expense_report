@@ -236,7 +236,7 @@ def convert_pdf_to_excel(pdf_path, output_filename):
                 # Regex to match table rows
                 match = re.match(r"(\w+)\s+(\d+\s+\w+\s+\d{4})(\d+)([a-zA-Z]{3})([a-zA-Z]+)", line)
                 if match:
-                    labelle, date, frais, devis, card = match.groups()
+                    libelle, date, frais, devis, card = match.groups()
                     frais = int(frais)
                     devis = devis.upper()
 
@@ -244,10 +244,10 @@ def convert_pdf_to_excel(pdf_path, output_filename):
                     converted_value = frais / rates.get(devis, 1.0)  # Default to original if no rate found
 
                     # Get Compte Comptable
-                    compte_comptable = compte_comptable_mapping.get(labelle.lower(), "Non défini")
+                    compte_comptable = compte_comptable_mapping.get(libelle.lower(), "Non défini")
 
                     extracted_data["Table"].append(
-                        [labelle, date, frais, devis, round(converted_value, 2), card, compte_comptable])
+                        [libelle, date, frais, devis, round(converted_value, 2), card, compte_comptable])
                 else:
                     print(f"Skipping unrecognized row: {line}")
 
@@ -330,7 +330,7 @@ def generate_response_html(extracted_data, excel_file_path):
     <body>
         <div class="container">
             <h1>Extracted Data</h1>
-            <p><strong>Name:</strong> {extracted_data["Labelle"]}</p>
+            <p><strong>Name:</strong> {extracted_data["Libelle"]}</p>
             <p><strong>Department:</strong> {extracted_data["Department"]}</p>
             <p><strong>Object:</strong> {extracted_data["Object"]}</p>
             <h2>Table Data</h2>
