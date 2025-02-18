@@ -166,10 +166,10 @@ def add_images_to_excel(image_files, excel_file_path):
 
 def convert_pdf_to_excel(pdf_path, output_filename):
     """Extracts structured data from a PDF and converts it to an Excel file."""
-    import re
+    
     reader = PdfReader(pdf_path)
     extracted_data = {"Libelle": None, "Department": None, "Object": None, "Table": []}
-
+    
     # Comptes comptables mapping
     compte_comptable_mapping = {
         "train": 625100,
@@ -236,29 +236,26 @@ def convert_pdf_to_excel(pdf_path, output_filename):
                 # Regex to match table rows
                 match = re.match(r"(\w+)\s+(\d+\s+\w+\s+\d{4})(\d+)([a-zA-Z]{3})([a-zA-Z]+)", line)
                 if match:
-                    libelle, date, frais, devis, card = match.groups()
+                    labelle, date, frais, devis, card = match.groups()
                     frais = int(frais)
                     devis = devis.upper()
 
                     # Convert Frais to EUR
                     converted_value = frais / rates.get(devis, 1.0)  # Default to original if no rate found
-
+                    
                     # Get Compte Comptable
-                    compte_comptable = compte_comptable_mapping.get(libelle.lower(), "Non défini")
+                    compte_comptable = compte_comptable_mapping.get(labelle.lower(), "Non défini")
 
-                    extracted_data["Table"].append(
-                        [libelle, date, frais, devis, round(converted_value, 2), card, compte_comptable])
+                    extracted_data["Table"].append([compte_comptable, labelle, date, frais, devis, round(converted_value, 2), card])
                 else:
                     print(f"Skipping unrecognized row: {line}")
 
     # Convert extracted data to DataFrame
     if extracted_data["Table"]:
-        df = pd.DataFrame(extracted_data["Table"],
-                          columns=["Libelle", "Date", "Frais", "Devis", "EUR", "Card", "Compte Comptable"])
+        df = pd.DataFrame(extracted_data["Table"], columns=["Compte Comptable", "Libelle", "Date", "Frais", "Devis", "EUR", "Card"])
         df = df.sort_values(by="Libelle")
     else:
-        df = pd.DataFrame(columns=["Libelle", "Date", "Frais", "Devis", "EUR", "Card",
-                                   "Compte Comptable"])  # Empty fallback DataFrame
+        df = pd.DataFrame(columns=["Compte Comptable", "Libelle", "Date", "Frais", "Devis", "EUR", "Card"])  # Empty fallback DataFrame
 
     # Ensure output directory exists
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
