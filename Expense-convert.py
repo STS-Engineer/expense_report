@@ -166,7 +166,7 @@ def add_images_to_excel(image_files, excel_file_path):
 
 def convert_pdf_to_excel(pdf_path, output_filename):
     """Extracts structured data from a PDF and converts it to an Excel file."""
-    
+    import re
     reader = PdfReader(pdf_path)
     extracted_data = {"Libelle": None, "Department": None, "Object": None, "Table": []}
     
