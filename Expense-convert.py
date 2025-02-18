@@ -252,10 +252,10 @@ def convert_pdf_to_excel(pdf_path, output_filename):
 
     # Convert extracted data to DataFrame
     if extracted_data["Table"]:
-        df = pd.DataFrame(extracted_data["Table"], columns=["Compte Comptable", "Libelle", "Date", "Frais", "Devis", "EUR", "Card"])
+        df = pd.DataFrame(extracted_data["Table"], columns=["Compte Comptable", "Libelle", "Date", "Montant en Devise", "Devise", "EUR", "Card"])
         df = df.sort_values(by="Libelle")
     else:
-        df = pd.DataFrame(columns=["Compte Comptable", "Libelle", "Date", "Frais", "Devis", "EUR", "Card"])  # Empty fallback DataFrame
+        df = pd.DataFrame(columns=["Compte Comptable", "Libelle", "Date", "Montant en Devise", "Devise", "EUR", "Card"])  # Empty fallback DataFrame
 
     # Ensure output directory exists
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
