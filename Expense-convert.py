@@ -166,17 +166,33 @@ def add_images_to_excel(image_files, excel_file_path):
 
 def convert_pdf_to_excel(pdf_path, output_filename):
     """Extracts structured data from a PDF and converts it to an Excel file."""
-
-    reader = PdfReader(pdf_path)
-    extracted_data = {"Labelle": None, "Department": None, "Object": None, "Table": []}
     import re
+    reader = PdfReader(pdf_path)
+    extracted_data = {"Libelle": None, "Department": None, "Object": None, "Table": []}
+
+    # Comptes comptables mapping
+    compte_comptable_mapping = {
+        "train": 625100,
+        "avion": 625100,
+        "parking": 625100,
+        "taxi": 625100,
+        "carburant": 625110,
+        "peages": 625130,
+        "entretien vehicule": 625140,
+        "hotel": 625200,
+        "repas restaurant": 625300,
+        "reception": 625700,
+        "affranchissement": 626000,
+        "telephonie": 626100,
+        "achats divers": 606300
+    }
+
     # Fetch conversion rates from Fixer.io
     try:
         response = requests.get(FIXER_API_URL, params={"access_key": FIXER_API_KEY})
         response.raise_for_status()
         conversion_data = response.json()
         rates = conversion_data.get("rates", {})
-        print("Fetched conversion rates:", rates)  # Debugging
     except Exception as e:
         print(f"Failed to fetch conversion rates: {e}")
         rates = {}
@@ -193,7 +209,7 @@ def convert_pdf_to_excel(pdf_path, output_filename):
             if "NAME" in line and "DEPARTMENT" in line:
                 match = re.search(r"NAME\s*(.*?)\s*DEPARTMENT\s*(.*)", line, re.IGNORECASE)
                 if match:
-                    extracted_data["Labelle"] = match.group(1).strip()
+                    extracted_data["Libelle"] = match.group(1).strip()
                     extracted_data["Department"] = match.group(2).strip()
 
             # Extract Object
@@ -227,16 +243,22 @@ def convert_pdf_to_excel(pdf_path, output_filename):
                     # Convert Frais to EUR
                     converted_value = frais / rates.get(devis, 1.0)  # Default to original if no rate found
 
-                    extracted_data["Table"].append([labelle, date, frais, devis, round(converted_value, 2), card])
+                    # Get Compte Comptable
+                    compte_comptable = compte_comptable_mapping.get(labelle.lower(), "Non défini")
+
+                    extracted_data["Table"].append(
+                        [labelle, date, frais, devis, round(converted_value, 2), card, compte_comptable])
                 else:
                     print(f"Skipping unrecognized row: {line}")
 
     # Convert extracted data to DataFrame
     if extracted_data["Table"]:
-        df = pd.DataFrame(extracted_data["Table"], columns=["Labelle", "Date", "Frais", "Devis", "EUR", "Card"])
-        df = df.sort_values(by="Labelle")
+        df = pd.DataFrame(extracted_data["Table"],
+                          columns=["Libelle", "Date", "Frais", "Devis", "EUR", "Card", "Compte Comptable"])
+        df = df.sort_values(by="Libelle")
     else:
-        df = pd.DataFrame(columns=["Labelle", "Date", "Frais", "Devis", "EUR", "Card"])  # Empty fallback DataFrame
+        df = pd.DataFrame(columns=["Libelle", "Date", "Frais", "Devis", "EUR", "Card",
+                                   "Compte Comptable"])  # Empty fallback DataFrame
 
     # Ensure output directory exists
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
@@ -246,6 +268,7 @@ def convert_pdf_to_excel(pdf_path, output_filename):
     df.to_excel(output_path, index=False)
 
     return extracted_data, output_path
+
 
 def generate_response_html(extracted_data, excel_file_path):
     # Generate HTML to display extracted data and converted Excel
@@ -313,11 +336,11 @@ def generate_response_html(extracted_data, excel_file_path):
             <h2>Table Data</h2>
             <table>
                 <thead>
-                    <tr>
-                        <th>Labelle</th>
+                      <tr>
+                        <th>Libelle</th>
                         <th>Date</th>
-                        <th>Frais</th>
-                        <th>Devis</th>
+                        <th>Montant en Devise</th>
+                        <th>Devise</th>
                         <th>EUR</th>
                         <th>Card</th>
                     </tr>
