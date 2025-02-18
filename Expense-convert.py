@@ -334,6 +334,7 @@ def generate_response_html(extracted_data, excel_file_path):
             <table>
                 <thead>
                       <tr>
+                        <th>Compte Comptable</th>
                         <th>Libelle</th>
                         <th>Date</th>
                         <th>Montant en Devise</th>
