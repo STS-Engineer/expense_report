@@ -169,11 +169,11 @@ def convert_pdf_to_excel(pdf_path, output_filename):
     import re
     reader = PdfReader(pdf_path)
     extracted_data = {"Libelle": None, "Department": None, "Object": None, "Table": []}
-    
+
     # Comptes comptables mapping
     compte_comptable_mapping = {
         "train": 625100,
-        "avion": 625100,
+        "Plane": 625100,
         "parking": 625100,
         "taxi": 625100,
         "carburant": 625110,
@@ -233,8 +233,8 @@ def convert_pdf_to_excel(pdf_path, output_filename):
                 if "Validation" in line or "Click here" in line or line.strip() == "":
                     continue  # Skip invalid rows
 
-                # Regex to match table rows
-                match = re.match(r"(\w+)\s+(\d+\s+\w+\s+\d{4})(\d+)([a-zA-Z]{3})([a-zA-Z]+)", line)
+        for i in range(len(lines)):    # Regex to match table rows
+                match = re.match(r"(\w+)\s+(\d+\s+\w+\s+\d{4})(\d+)([a-zA-Z]{3})([a-zA-Z]+)", lines[i])
                 if match:
                     labelle, date, frais, devis, card = match.groups()
                     frais = int(frais)
@@ -242,20 +242,23 @@ def convert_pdf_to_excel(pdf_path, output_filename):
 
                     # Convert Frais to EUR
                     converted_value = frais / rates.get(devis, 1.0)  # Default to original if no rate found
-                    
+
                     # Get Compte Comptable
                     compte_comptable = compte_comptable_mapping.get(labelle.lower(), "Non défini")
 
-                    extracted_data["Table"].append([compte_comptable, labelle, date, frais, devis, round(converted_value, 2), card])
+                    extracted_data["Table"].append(
+                        [compte_comptable, labelle, date, frais, devis, round(converted_value, 2), card])
                 else:
                     print(f"Skipping unrecognized row: {line}")
 
     # Convert extracted data to DataFrame
     if extracted_data["Table"]:
-        df = pd.DataFrame(extracted_data["Table"], columns=["Compte Comptable", "Libelle", "Date", "Montant en Devise", "Devise", "EUR", "Card"])
+        df = pd.DataFrame(extracted_data["Table"],
+                          columns=["Compte Comptable", "Libelle", "Date", "Montant en Devise", "Devise", "EUR", "Card"])
         df = df.sort_values(by="Libelle")
     else:
-        df = pd.DataFrame(columns=["Compte Comptable", "Libelle", "Date", "Montant en Devise", "Devise", "EUR", "Card"])  # Empty fallback DataFrame
+        df = pd.DataFrame(columns=["Compte Comptable", "Libelle", "Date", "Montant en Devise", "Devise", "EUR",
+                                   "Card"])  # Empty fallback DataFrame
 
     # Ensure output directory exists
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
@@ -265,6 +268,7 @@ def convert_pdf_to_excel(pdf_path, output_filename):
     df.to_excel(output_path, index=False)
 
     return extracted_data, output_path
+
 
 
 def generate_response_html(extracted_data, excel_file_path):
