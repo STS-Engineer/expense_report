@@ -97,22 +97,29 @@ def upload_file():
         # Extract data and convert to Excel (your existing functionality)
         extracted_data, excel_file_path = convert_pdf_to_excel(file_path, file.filename.replace('.pdf', '.xlsx'))
 
-        # Extract images and add them to the Excel file
-        image_files = extract_images_from_pdf(file_path)
+        image_files = extract_images_from_pdf(file_path, IMAGE_FOLDER)
         if image_files:
-            add_images_to_excel(image_files, excel_file_path)
+            add_images_to_excel(image_files, excel_file_path, extracted_data)  # ✅ Pass extracted_data
             print(f"Extracted and added {len(image_files)} images to Excel.")
-
         return render_template_string(generate_response_html(extracted_data, excel_file_path))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 IMAGE_FOLDER = os.path.join(OUTPUT_FOLDER, 'images')
 os.makedirs(IMAGE_FOLDER, exist_ok=True)
-def extract_images_from_pdf(pdf_path):
-    """Extract images from a PDF and save them as files."""
+
+
+def extract_images_from_pdf(pdf_path, IMAGE_FOLDER):
+    """Extract unique images from a PDF and save them as files."""
+    import fitz
+    import os
+    import hashlib
+    from PIL import Image
+    import io
     doc = fitz.open(pdf_path)
-    image_paths = []
+    os.makedirs(IMAGE_FOLDER, exist_ok=True)  # Ensure output directory exists
+    image_paths = {}  # Track saved images with sheet names
+    extracted_hashes = set()  # Store hashes to detect duplicates
 
     for page_number in range(len(doc)):
         page = doc[page_number]
@@ -124,70 +131,41 @@ def extract_images_from_pdf(pdf_path):
             image_bytes = base_image["image"]
             image_ext = base_image["ext"]
 
+            # Convert image to grayscale & resize before hashing
+            image = Image.open(io.BytesIO(image_bytes)).convert("L").resize((100, 100))
+            img_hash = hashlib.md5(image.tobytes()).hexdigest()
+
+            if img_hash in extracted_hashes:
+                continue  # Skip duplicate images
+
+            extracted_hashes.add(img_hash)  # Store new hash
+
             output_path = os.path.join(IMAGE_FOLDER, f'page-{page_number + 1}_image-{img_index + 1}.{image_ext}')
             with open(output_path, "wb") as img_file:
                 img_file.write(image_bytes)
-            image_paths.append(output_path)
+
+            sheet_name = f"Image {len(image_paths) + 1}"
+            image_paths[output_path] = sheet_name
 
     return image_paths
-
-def add_images_to_excel(image_files, excel_file_path):
-    """Embed images into separate sheets in an existing Excel file without duplication."""
-    workbook = load_workbook(excel_file_path)
-
-    added_images = set()  # Track added images to prevent duplicates
-
-    for index, image_path in enumerate(image_files, start=1):
-        if image_path in added_images:
-            continue  # Skip duplicate images
-
-        img = ExcelImage(image_path)
-        img.width, img.height = 300, 300  # Resize images for better visibility
-
-        sheet_name = f"Image {index}"
-        if sheet_name not in workbook.sheetnames:  # Ensure unique sheet names
-            image_sheet = workbook.create_sheet(title=sheet_name)
-
-            # Set header
-            image_sheet.append(["Extracted Image"])
-            image_sheet["A1"].font = Font(bold=True)
-
-            # Insert image
-            cell = "A3"  # Leave space for the header
-            image_sheet.add_image(img, cell)
-
-            # Adjust column width and row height
-            image_sheet.column_dimensions["A"].width = 50
-            image_sheet.row_dimensions[3].height = 200
-
-            added_images.add(image_path)  # Mark image as added
-
-    workbook.save(excel_file_path)
-
 def convert_pdf_to_excel(pdf_path, output_filename):
     """Extracts structured data from a PDF and converts it to an Excel file."""
     import re
-    reader = PdfReader(pdf_path)
+    try:
+        reader = PdfReader(pdf_path)
+    except Exception as e:
+        print(f"Error opening PDF: {e}")
+        return None, None
+
     extracted_data = {"Libelle": None, "Department": None, "Object": None, "Table": []}
 
     # Comptes comptables mapping
     compte_comptable_mapping = {
-        "train": 625100,
-        "Plane": 625100,
-        "parking": 625100,
-        "taxi": 625100,
-        "carburant": 625110,
-        "peages": 625130,
-        "entretien vehicule": 625140,
-        "hotel": 625200,
-        "repas restaurant": 625300,
-        "reception": 625700,
-        "affranchissement": 626000,
-        "telephonie": 626100,
-        "achats divers": 606300
+        "train": 625100, "plane": 625100, "parking": 625100, "taxi": 625100,
+        "carburant": 625110, "peages": 625130, "entretien vehicule": 625140,
+        "hotel": 625200, "repas restaurant": 625300, "reception": 625700,
+        "affranchissement": 626000, "telephonie": 626100, "achats divers": 606300
     }
-
-    # Fetch conversion rates from Fixer.io
     try:
         response = requests.get(FIXER_API_URL, params={"access_key": FIXER_API_KEY})
         response.raise_for_status()
@@ -201,64 +179,57 @@ def convert_pdf_to_excel(pdf_path, output_filename):
         text = page.extract_text()
         if not text:
             continue
+
         lines = text.split('\n')
 
-        headers_found = False
         for line in lines:
             # Extract Name and Department
-            if "NAME" in line and "DEPARTMENT" in line:
-                match = re.search(r"NAME\s*(.*?)\s*DEPARTMENT\s*(.*)", line, re.IGNORECASE)
-                if match:
-                    extracted_data["Libelle"] = match.group(1).strip()
-                    extracted_data["Department"] = match.group(2).strip()
+            match = re.search(r"NAME\s*(.*?)\s*DEPARTMENT\s*(.*)", line, re.IGNORECASE)
+            if match:
+                extracted_data["Libelle"] = match.group(1).strip()
+                extracted_data["Department"] = match.group(2).strip()
 
             # Extract Object
-            if "OBJECT" in line:
-                match = re.search(r"OBJECT\s*(.*)", line, re.IGNORECASE)
-                if match:
-                    extracted_data["Object"] = match.group(1).strip()
+            match = re.search(r"OBJECT\s*(.*)", line, re.IGNORECASE)
+            if match:
+                extracted_data["Object"] = match.group(1).strip()
+
             elif "RESPONSIBLE" in line:
                 match = re.search(r"(\w+)\s+RESPONSIBLE", line)
                 if match:
-                    word_before_responsible = match.group(1).strip()
-                    extracted_data["Object"] = f"{extracted_data.get('Object', '')} {word_before_responsible}".strip()
+                    extracted_data["Object"] = f"{extracted_data.get('Object', '')} {match.group(1).strip()}".strip()
 
         # Process Table Data
-        for line in lines:
-            if "Type DateFraisDevi" in line:  # Detect table header
-                headers_found = True
-                continue
+        for i in range(len(lines)):
+            match = re.match(r"(\w+)\s+(\d+\s+\w+\s+\d{4})(\d+)([a-zA-Z]{3})([a-zA-Z]+)", lines[i])
+            if match:
+                labelle, date, frais, devis, card = match.groups()
+                frais = int(frais)
+                devis = devis.upper()
 
-            if headers_found:
-                if "Validation" in line or "Click here" in line or line.strip() == "":
-                    continue  # Skip invalid rows
+                # Convert Frais to EUR
+                converted_value = frais / rates.get(devis, 1.0)  # Default to original if no rate found
+                # Get Compte Comptable
+                compte_comptable = compte_comptable_mapping.get(labelle.lower(), "Non défini")
 
-        for i in range(len(lines)):    # Regex to match table rows
-                match = re.match(r"(\w+)\s+(\d+\s+\w+\s+\d{4})(\d+)([a-zA-Z]{3})([a-zA-Z]+)", lines[i])
-                if match:
-                    labelle, date, frais, devis, card = match.groups()
-                    frais = int(frais)
-                    devis = devis.upper()
-
-                    # Convert Frais to EUR
-                    converted_value = frais / rates.get(devis, 1.0)  # Default to original if no rate found
-
-                    # Get Compte Comptable
-                    compte_comptable = compte_comptable_mapping.get(labelle.lower(), "Non défini")
-
-                    extracted_data["Table"].append(
-                        [compte_comptable, labelle, date, frais, devis, round(converted_value, 2), card])
-                else:
-                    print(f"Skipping unrecognized row: {line}")
+                extracted_data["Table"].append(
+                    [compte_comptable, labelle, date, frais, devis, round(converted_value,2), card]
+                )
+            else:
+                print(f"Skipping unrecognized row: {lines[i]}")
 
     # Convert extracted data to DataFrame
-    if extracted_data["Table"]:
-        df = pd.DataFrame(extracted_data["Table"],
-                          columns=["Compte Comptable", "Libelle", "Date", "Montant en Devise", "Devise", "EUR", "Card"])
-        df = df.sort_values(by="Libelle")
-    else:
-        df = pd.DataFrame(columns=["Compte Comptable", "Libelle", "Date", "Montant en Devise", "Devise", "EUR",
-                                   "Card"])  # Empty fallback DataFrame
+    df = pd.DataFrame(extracted_data["Table"],
+                      columns=["Compte Comptable", "Libelle", "Date", "Montant en Devise", "Devise", "EUR", "Card"])
+
+    if not df.empty:
+
+
+        # Add total row
+        total_devise = df["Montant en Devise"].sum()
+        total_eur = df["EUR"].sum()
+        total_row = pd.DataFrame([["", "TOTAL", "", total_devise, "", total_eur, ""]], columns=df.columns)
+        df = pd.concat([df, total_row], ignore_index=True)
 
     # Ensure output directory exists
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
@@ -269,6 +240,56 @@ def convert_pdf_to_excel(pdf_path, output_filename):
 
     return extracted_data, output_path
 
+
+def add_images_to_excel(image_files, excel_file_path, extracted_data):
+    """Embed images into separate sheets in an existing Excel file, named after 'Libelle' and 'Date'."""
+    from openpyxl.drawing.image import Image as ExcelImage
+    from openpyxl.styles import Font
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(excel_file_path)
+
+    if "Table" not in extracted_data or not extracted_data["Table"]:
+        print("Warning: extracted_data['Table'] is empty or missing.")
+        return  # Prevents crashing if no data exists
+
+    for index, (image_path, sheet_name) in enumerate(image_files.items()):
+        # ✅ Check if index exists in extracted_data["Table"]
+        if index >= len(extracted_data["Table"]):
+            print(f"Warning: No corresponding 'Libelle' and 'Date' for image {image_path}. Skipping.")
+            continue  # Skip this image if no corresponding data exists
+
+        libelle, date = extracted_data["Table"][index][1], extracted_data["Table"][index][2]  # Extract Libelle and Date
+
+        # ✅ Ensure sheet name does not exceed Excel's 31-character limit
+        clean_sheet_name = f"{libelle[:20]}_{date}"  # Truncate if too long
+
+        # Ensure unique sheet names
+        original_name = clean_sheet_name
+        count = 1
+        while clean_sheet_name in workbook.sheetnames:
+            clean_sheet_name = f"{original_name}_{count}"
+            count += 1
+
+        # Insert image
+        img = ExcelImage(image_path)
+        img.width, img.height = 300, 300  # Resize for visibility
+
+        image_sheet = workbook.create_sheet(title=clean_sheet_name)
+
+        # Set header
+        image_sheet.append(["Extracted Image"])
+        image_sheet["A1"].font = Font(bold=True)
+
+        # Insert image into cell A3
+        image_sheet.add_image(img, "A3")
+
+        # Adjust column width and row height
+        image_sheet.column_dimensions["A"].width = 50
+        image_sheet.row_dimensions[3].height = 200
+
+    workbook.save(excel_file_path)
+    return image_files
 
 
 def generate_response_html(extracted_data, excel_file_path):
