@@ -48,39 +48,29 @@ jobs:
     needs: build
     environment:
       name: 'Production'
+      url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
     permissions:
-      id-token: write
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        attempt: [1, 2, 3]
+      id-token: write #This is required for requesting the JWT
 
     steps:
-    - name: Download artifact from build job
-      uses: actions/download-artifact@v4
-      with:
-        name: python-app
+      - name: Download artifact from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: python-app
 
-    - name: Unzip artifact for deployment
-      run: unzip release.zip
+      - name: Unzip artifact for deployment
+        run: unzip release.zip
 
-    - name: Login to Azure
-      uses: azure/login@v2
-      with:
-        client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_1DD7F65CBE7149F1B9B5C792356A7155 }}
-        tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_5645F723519947A9BD18C6F8C09AA8A8 }}
-        subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_40D0E39C8E3242F2849729E99E01AB5A }}
-
-    - name: Restart Azure Web App
-      uses: azure/cli@v2
-      with:
-        inlineScript: |
-          az webapp restart --name Expense-report-avo --resource-group <your-resource-group-name>
-
-    - name: Deploy to Azure Web App (Attempt ${{ matrix.attempt }})
-      uses: azure/webapps-deploy@v3
-      with:
-        app-name: Expense-report-avo
-        slot-name: Production
-        package: .
+      
+      - name: Login to Azure
+        uses: azure/login@v4
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_1DD7F65CBE7149F1B9B5C792356A7155 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_5645F723519947A9BD18C6F8C09AA8A8 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_40D0E39C8E3242F2849729E99E01AB5A }}
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: Expense-report-avo
+          slot-name: Production
+          package: .
