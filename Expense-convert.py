@@ -139,7 +139,7 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
     extracted_data = {"Libelle": None, "Department": None, "Object": None, "Table": []}
     compte_comptable_mapping = {
         "train": 625100, "plane": 625100, "parking": 625100, "taxi": 625100,
-        "carburant": 625110, "peages": 625130, "entretien vehicule": 625140,
+        "Fuel": 625110, "peage": 625130, "entretien vehicule": 625140,
         "hotel": 625200, "repas restaurant": 625300, "reception": 625700,
         "affranchissement": 626000, "telephonie": 626100, "achats divers": 606300
     }
@@ -181,7 +181,7 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
                     extracted_data["Object"] = f"{extracted_data.get('Object', '')} {match.group(1).strip()}".strip()
 
         for i in range(len(lines)):
-            match = re.match(r"(\w+)\s+(\d+\s+\w+\s+\d{4})(\d+)([a-zA-Z]{3})([a-zA-Z]+)", lines[i])
+            match = re.match(r"(\w+)\s+(\d+\s+\w+\s+\d{4})\s*(\d+)\s*([a-zA-Z]{3,4})\s*([a-zA-Z]+\s*[a-zA-Z]*)", lines[i])
             if match:
                 labelle, date, frais, devis, card = match.groups()
                 frais = int(frais)
