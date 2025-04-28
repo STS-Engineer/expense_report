@@ -181,7 +181,7 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
                     extracted_data["Object"] = f"{extracted_data.get('Object', '')} {match.group(1).strip()}".strip()
 
         for i in range(len(lines)):
-            match = re.match(r"(\w+)\s+(\d+\s+\w+\s+\d{4})\s*(\d+)\s*([a-zA-Z]{3,4})\s*([a-zA-Z]+\s*[a-zA-Z]*)", lines[i])
+            match = re.match(r"(\w+)\s+(\d+\s+\w+\s+\d{4})\s*(\d+)\s*([a-zA-Z]{3})\s*([a-zA-Z]+\s*[a-zA-Z]*)", lines[i])
             if match:
                 labelle, date, frais, devis, card = match.groups()
                 frais = int(frais)
