@@ -74,5 +74,5 @@ jobs:
           app-name: Expense-report-avo
           slot-name: Production
           package: .
-          retryCount: 3
+        
           
