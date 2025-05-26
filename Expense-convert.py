@@ -135,13 +135,13 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
     os.makedirs(output_folder, exist_ok=True)
     os.makedirs(image_folder, exist_ok=True)
 
-    # -------------------- Extract table data --------------------
     extracted_data = {"Libelle": None, "Department": None, "Object": None, "Table": []}
     compte_comptable_mapping = {
         "train": 625100, "plane": 625100, "parking": 625100, "taxi": 625100,
-        "Fuel": 625110, "peage": 625130, "entretien vehicule": 625140,
+        "fuel": 625110, "peage": 625130, "entretien vehicule": 625140,
         "hotel": 625200, "repas restaurant": 625300, "reception": 625700,
-        "affranchissement": 626000, "telephonie": 626100, "achats divers": 606300
+        "affranchissement": 626000, "telephonie": 626100, "achats divers": 606300,
+        "food": 625300
     }
 
     try:
@@ -174,36 +174,37 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
             match = re.search(r"OBJECT\s*(.*)", line, re.IGNORECASE)
             if match:
                 extracted_data["Object"] = match.group(1).strip()
-
             elif "RESPONSIBLE" in line:
                 match = re.search(r"(\w+)\s+RESPONSIBLE", line)
                 if match:
                     extracted_data["Object"] = f"{extracted_data.get('Object', '')} {match.group(1).strip()}".strip()
 
         for i in range(len(lines)):
-            match = re.match(r"(\w+)\s+(\d+\s+\w+\s+\d{4})\s*(\d+)\s*([a-zA-Z]{3})\s*([a-zA-Z]+\s*[a-zA-Z]*)", lines[i])
+            match = re.match(r"(\w+)\s+(\d+\s+\w+\s+\d{4})\s*([\d.]+)\s*([a-zA-Z]{3})\s*([a-zA-Z]+)", lines[i])
             if match:
-                labelle, date, frais, devis, card = match.groups()
-                frais = int(frais)
-                devis = devis.upper()
-                converted_value = frais / rates.get(devis, 1.0)
-                compte_comptable = compte_comptable_mapping.get(labelle.lower(), "Non défini")
+                try:
+                    labelle, date, frais, devis, card = match.groups()
+                    frais = float(frais)
+                    devis = devis.upper()
+                    converted_value = frais / rates.get(devis, 1.0)
+                    compte_comptable = compte_comptable_mapping.get(labelle.lower(), "Non défini")
 
-                extracted_data["Table"].append(
-                    [compte_comptable, labelle, date, frais, devis, round(converted_value, 2), card]
-                )
+                    row = [compte_comptable, labelle, date, frais, devis, round(converted_value, 2), card]
+                    if len(row) == 7:
+                        extracted_data["Table"].append(row)
+                except Exception as e:
+                    print(f"[WARN] Skipping row due to error: {e}")
 
-    df = pd.DataFrame(extracted_data["Table"],
-                      columns=["Compte Comptable", "Libelle", "Date", "Montant en Devise", "Devise", "EUR", "Card"])
+    # Only include complete rows
+    valid_rows = [row for row in extracted_data["Table"] if isinstance(row, list) and len(row) == 7]
 
-    if not df.empty:
-        total_devise = df["Montant en Devise"].sum()
-        total_eur = df["EUR"].sum()
-        df.loc[len(df.index)] = ["", "TOTAL", "", total_devise, "", total_eur, ""]
+    df = pd.DataFrame(valid_rows, columns=[
+        "Compte Comptable", "Libelle", "Date", "Montant en Devise", "Devise", "EUR", "Card"
+    ])
 
     output_path = os.path.join(output_folder, output_filename)
 
-    # -------------------- Extract images from PDF --------------------
+    # Extract images from PDF
     doc = fitz.open(pdf_path)
     images = []
     extracted_hashes = set()
@@ -217,29 +218,20 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
                 base_image = doc.extract_image(xref)
                 image_bytes = base_image["image"]
                 image_ext = base_image["ext"]
-
                 rects = page.get_image_rects(xref)
                 if not rects:
                     continue
                 top_y = rects[0].y0
-
                 img_preview = Image.open(io.BytesIO(image_bytes)).convert("L").resize((100, 100))
                 img_hash = hashlib.md5(img_preview.tobytes()).hexdigest()
                 if img_hash in extracted_hashes:
                     continue
                 extracted_hashes.add(img_hash)
-
-                image_blocks.append({
-                    "y": top_y,
-                    "bytes": image_bytes,
-                    "ext": image_ext
-                })
+                image_blocks.append({"y": top_y, "bytes": image_bytes, "ext": image_ext})
             except Exception as e:
                 print(f"Error extracting image from xref {xref}: {e}")
                 continue
-
         image_blocks.sort(key=lambda x: x["y"])
-
         for img_data in image_blocks:
             filename = f"image_{len(images)+1}.{img_data['ext']}"
             output_image_path = os.path.join(image_folder, filename)
@@ -247,44 +239,45 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
                 f.write(img_data["bytes"])
             images.append(output_image_path)
 
-    # -------------------- Write Summary Sheet --------------------
+    # Append image filenames before TOTAL row
+    image_filenames = [os.path.basename(img) for img in images]
+    while len(image_filenames) < len(df):
+        image_filenames.append("")
+    df["Image Filename"] = image_filenames
+
+    # Insert TOTAL row safely
+    if not df.empty:
+        total_row = {col: "" for col in df.columns}
+        total_row["Libelle"] = "TOTAL"
+        total_row["Montant en Devise"] = df["Montant en Devise"].sum()
+        total_row["EUR"] = df["EUR"].sum()
+        df.loc[len(df.index)] = total_row
+
+    # Write Summary sheet
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         meta_df = pd.DataFrame({
             "Field": ["Libelle", "Department", "Object"],
             "Value": [extracted_data["Libelle"], extracted_data["Department"], extracted_data["Object"]]
         })
         meta_df.to_excel(writer, sheet_name="Summary", index=False, startrow=0)
-
-        image_filenames = [os.path.basename(img) for img in images]
-        while len(image_filenames) < len(df) - 1:
-            image_filenames.append("")
-        image_filenames.append("")  # For TOTAL row
-        df["Image Filename"] = image_filenames
-
         df.to_excel(writer, sheet_name="Summary", index=False, startrow=5)
 
-    # -------------------- Write One Sheet per Row with Image --------------------
+    # Write one sheet per row
     try:
         workbook = load_workbook(output_path)
-        for idx, row in enumerate(extracted_data["Table"]):
-            if row[1] == "TOTAL":
-                continue
-
+        for idx, row in enumerate(valid_rows):
             image_filename = os.path.basename(images[idx]) if idx < len(images) else f"Row_{idx+1}"
-            base_sheet_name = os.path.splitext(image_filename)[0][:31]  # Sheet name max length = 31
+            base_sheet_name = os.path.splitext(image_filename)[0][:31]
             sheet_name = base_sheet_name
             count = 1
             while sheet_name in workbook.sheetnames:
                 sheet_name = f"{base_sheet_name[:28]}_{count}"
                 count += 1
-
             sheet = workbook.create_sheet(title=sheet_name)
-
             headers = ["Compte Comptable", "Libelle", "Date", "Montant en Devise", "Devise", "EUR", "Card", "Image Filename"]
-            row_with_filename = list(row) + [image_filename if idx < len(images) else ""]
+            row_with_filename = row + [image_filename if idx < len(images) else ""]
             sheet.append(headers)
             sheet.append(row_with_filename)
-
             if idx < len(images):
                 try:
                     sheet["A4"] = "Attached Receipt"
@@ -295,9 +288,7 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
                     sheet.row_dimensions[5].height = 200
                 except Exception as e:
                     print(f"Failed to insert image for row {idx + 1}: {e}")
-
         workbook.save(output_path)
-
     except Exception as e:
         print(f"Failed to write image sheets: {e}")
 
