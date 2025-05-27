@@ -143,6 +143,12 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
         "affranchissement": 626000, "telephonie": 626100, "achats divers": 606300,
         "food": 625300
     }
+    expense_topic_mapping = {
+        "train": "Transport", "plane": "Transport", "parking": "Transport", "taxi": "Transport",
+        "fuel": "Transport", "peage": "Transport", "entretien vehicule": "Transport",
+        "hotel": "Lodging", "repas restaurant": "Meals", "food": "Meals", "reception": "Hospitality",
+        "affranchissement": "Postage", "telephonie": "Communication", "achats divers": "Miscellaneous"
+    }
 
     try:
         response = requests.get(fixer_api_url, params={"access_key": fixer_api_key})
@@ -171,16 +177,10 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
                 extracted_data["Libelle"] = match.group(1).strip()
                 extracted_data["Department"] = match.group(2).strip()
 
-            match = re.search(r"OBJECT\s*(.*)", line, re.IGNORECASE)
-            if match:
-                extracted_data["Object"] = match.group(1).strip()
-            elif "RESPONSIBLE" in line:
-                match = re.search(r"(\w+)\s+RESPONSIBLE", line)
-                if match:
-                    extracted_data["Object"] = f"{extracted_data.get('Object', '')} {match.group(1).strip()}".strip()
+
 
         for i in range(len(lines)):
-            match = re.match(r"(\w+)\s+(\d+\s+\w+\s+\d{4})\s*([\d.]+)\s*([a-zA-Z]{3})\s*([a-zA-Z]+)", lines[i])
+            match = re.match(r"(.+?)\s+(\d+\s+\w+\s+\d{4})\s*([\d.,]+)\s*([a-zA-Z]{1,3})\s*([a-zA-Z]+)", lines[i])
             if match:
                 try:
                     labelle, date, frais, devis, card = match.groups()
@@ -188,23 +188,23 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
                     devis = devis.upper()
                     converted_value = frais / rates.get(devis, 1.0)
                     compte_comptable = compte_comptable_mapping.get(labelle.lower(), "Non défini")
+                    expense_topic = expense_topic_mapping.get(labelle.lower(), "Unknown")
 
-                    row = [compte_comptable, labelle, date, frais, devis, round(converted_value, 2), card]
-                    if len(row) == 7:
+                    row = [compte_comptable, labelle, date, frais, devis, round(converted_value, 2), card, expense_topic]
+                    if len(row) == 8:
                         extracted_data["Table"].append(row)
                 except Exception as e:
                     print(f"[WARN] Skipping row due to error: {e}")
 
-    # Only include complete rows
-    valid_rows = [row for row in extracted_data["Table"] if isinstance(row, list) and len(row) == 7]
+    valid_rows = [row for row in extracted_data["Table"] if isinstance(row, list) and len(row) == 8]
 
     df = pd.DataFrame(valid_rows, columns=[
-        "Compte Comptable", "Libelle", "Date", "Montant en Devise", "Devise", "EUR", "Card"
+        "Compte Comptable", "Libelle", "Date", "Montant en Devise",
+        "Devise", "EUR", "Card", "Expense Topic"
     ])
 
     output_path = os.path.join(output_folder, output_filename)
 
-    # Extract images from PDF
     doc = fitz.open(pdf_path)
     images = []
     extracted_hashes = set()
@@ -239,13 +239,11 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
                 f.write(img_data["bytes"])
             images.append(output_image_path)
 
-    # Append image filenames before TOTAL row
     image_filenames = [os.path.basename(img) for img in images]
     while len(image_filenames) < len(df):
         image_filenames.append("")
     df["Image Filename"] = image_filenames
 
-    # Insert TOTAL row safely
     if not df.empty:
         total_row = {col: "" for col in df.columns}
         total_row["Libelle"] = "TOTAL"
@@ -253,16 +251,14 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
         total_row["EUR"] = df["EUR"].sum()
         df.loc[len(df.index)] = total_row
 
-    # Write Summary sheet
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         meta_df = pd.DataFrame({
-            "Field": ["Libelle", "Department", "Object"],
-            "Value": [extracted_data["Libelle"], extracted_data["Department"], extracted_data["Object"]]
+            "Field": ["Libelle", "Department"],
+            "Value": [extracted_data["Libelle"], extracted_data["Department"]]
         })
         meta_df.to_excel(writer, sheet_name="Summary", index=False, startrow=0)
         df.to_excel(writer, sheet_name="Summary", index=False, startrow=5)
 
-    # Write one sheet per row
     try:
         workbook = load_workbook(output_path)
         for idx, row in enumerate(valid_rows):
@@ -274,7 +270,10 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
                 sheet_name = f"{base_sheet_name[:28]}_{count}"
                 count += 1
             sheet = workbook.create_sheet(title=sheet_name)
-            headers = ["Compte Comptable", "Libelle", "Date", "Montant en Devise", "Devise", "EUR", "Card", "Image Filename"]
+            headers = [
+                "Compte Comptable", "Libelle", "Date", "Montant en Devise",
+                "Devise", "EUR", "Card", "Expense Topic", "Image Filename"
+            ]
             row_with_filename = row + [image_filename if idx < len(images) else ""]
             sheet.append(headers)
             sheet.append(row_with_filename)
@@ -297,7 +296,9 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
 def generate_response_html(extracted_data, excel_file_path):
     # Generate HTML to display extracted data and converted Excel
     table_rows = "".join(
-        f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td><td>{row[5]}</td></tr>"
+        f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td>"
+        f"<td>{row[3]}</td><td>{row[4]}</td><td>{row[5]}</td>"
+        f"<td>{row[6]}</td><td>{row[7]}</td></tr>"
         for row in extracted_data["Table"]
     )
     return f'''
@@ -356,7 +357,7 @@ def generate_response_html(extracted_data, excel_file_path):
             <h1>Extracted Data</h1>
             <p><strong>Name:</strong> {extracted_data["Libelle"]}</p>
             <p><strong>Department:</strong> {extracted_data["Department"]}</p>
-            <p><strong>Object:</strong> {extracted_data["Object"]}</p>
+            
             <h2>Table Data</h2>
             <table>
                 <thead>
@@ -368,6 +369,7 @@ def generate_response_html(extracted_data, excel_file_path):
                         <th>Devise</th>
                         <th>EUR</th>
                         <th>Card</th>
+                        <th>Expense Topic</th>
                     </tr>
                 </thead>
                 <tbody>
