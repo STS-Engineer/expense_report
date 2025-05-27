@@ -7,6 +7,7 @@ import fitz  # PyMuPDF for extracting images
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as ExcelImage
 from openpyxl.styles import Font
+
 app = Flask(__name__)
 
 UPLOAD_FOLDER = 'uploads'
@@ -96,7 +97,6 @@ def upload_file():
 
     try:
 
-
         # Convert PDF + images to Excel
         output_filename = file.filename.replace('.pdf', '.xlsx')
         extracted_data, excel_file_path = process_pdf_to_excel_with_images(
@@ -108,17 +108,18 @@ def upload_file():
             image_folder="./images"
         )
 
-
         return render_template_string(generate_response_html(extracted_data, excel_file_path))
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 IMAGE_FOLDER = os.path.join(OUTPUT_FOLDER, 'images')
 os.makedirs(IMAGE_FOLDER, exist_ok=True)
 
 
-def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, fixer_api_key, output_folder, image_folder):
+def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, fixer_api_key, output_folder,
+                                     image_folder):
     import os
     import re
     import io
@@ -143,12 +144,6 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
         "affranchissement": 626000, "telephonie": 626100, "achats divers": 606300,
         "food": 625300
     }
-    expense_topic_mapping = {
-        "train": "Transport", "plane": "Transport", "parking": "Transport", "taxi": "Transport",
-        "fuel": "Transport", "peage": "Transport", "entretien vehicule": "Transport",
-        "hotel": "Lodging", "repas restaurant": "Meals", "food": "Meals", "reception": "Hospitality",
-        "affranchissement": "Postage", "telephonie": "Communication", "achats divers": "Miscellaneous"
-    }
 
     try:
         response = requests.get(fixer_api_url, params={"access_key": fixer_api_key})
@@ -168,40 +163,85 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
         text = page.extract_text()
         if not text:
             continue
+        # Extract name and department
+        name_match = re.search(r"NAME\s*:?[\s]*([A-Za-zÀ-ÿ\s]+?)\s+DEPARTMENT\s*:?[\s]*([A-Za-zÀ-ÿ\s]+)", text,
+                               re.IGNORECASE)
+        if name_match:
+            extracted_data["Libelle"] = name_match.group(1).strip()
+            dept_raw = name_match.group(2).strip()
+            dept_clean = re.split(r"\s+OBJECT", dept_raw, maxsplit=1)[0].strip()
+            extracted_data["Department"] = dept_clean
 
         lines = text.split('\n')
+        merged_lines = []
+        buffer = ""
 
         for line in lines:
-            match = re.search(r"NAME\s*(.*?)\s*DEPARTMENT\s*(.*)", line, re.IGNORECASE)
-            if match:
-                extracted_data["Libelle"] = match.group(1).strip()
-                extracted_data["Department"] = match.group(2).strip()
+            buffer += " " + line.strip()
+            if re.search(r"\d{1,2}\s+\w+\s+\d{4}.*\d+.*(EUR|USD|MAD).*Card", buffer, re.IGNORECASE):
+                merged_lines.append(buffer.strip())
+                buffer = ""
+        if buffer:
+            merged_lines.append(buffer.strip())
 
+        expense_keywords = ["Food", "Taxi", "Hotel", "Train", "Plane", "Parking", "Fuel", "Peage", "Entretienvehicule", "Reception", "Affranchissement", "Telephonie", "Achatsdivers"]
 
+        for merged_line in merged_lines:
+            merged_line = re.sub(r'\s+', '', merged_line).strip()
+            print("Merged line:", merged_line)
 
-        for i in range(len(lines)):
-            match = re.match(r"(.+?)\s+(\d+\s+\w+\s+\d{4})\s*([\d.,]+)\s*([a-zA-Z]{1,3})\s*([a-zA-Z]+)", lines[i])
-            if match:
-                try:
-                    labelle, date, frais, devis, card = match.groups()
-                    frais = float(frais)
-                    devis = devis.upper()
-                    converted_value = frais / rates.get(devis, 1.0)
-                    compte_comptable = compte_comptable_mapping.get(labelle.lower(), "Non défini")
-                    expense_topic = expense_topic_mapping.get(labelle.lower(), "Unknown")
+            split_pattern = r'(?=(' + '|'.join(expense_keywords) + r'))'
+            entries = re.split(split_pattern, merged_line)
+            entry_blocks = []
+            entry_labels = []
+            for i in range(1, len(entries), 2):
+                entry_blocks.append(entries[i+1].strip())
+                entry_labels.append(entries[i].strip())
 
-                    row = [compte_comptable, labelle, date, frais, devis, round(converted_value, 2), card, expense_topic]
-                    if len(row) == 8:
-                        extracted_data["Table"].append(row)
-                except Exception as e:
-                    print(f"[WARN] Skipping row due to error: {e}")
+            for idx, entry in enumerate(entry_blocks):
+                match = re.search(r"(?i)(\d{1,2})([A-Za-z]+)(\d{4})([\d.,]+)(EUR|USD|MAD)(Card|offCard)([A-Z]+)", entry)
+
+                if match:
+                    try:
+                        day = match.group(1)
+                        month = match.group(2)
+                        year = match.group(3)
+                        date = f"{day} {month} {year}"
+                        frais = float(match.group(4).replace(',', '.'))
+                        devis = match.group(5).upper()
+                        card = match.group(6).strip().capitalize()
+
+                        expense_topic = match.group(7).strip().upper()
+
+                        for stop_word in ["AVOCARBON", "FRANCE", "TOTAL", "DATE", "PHONE"]:
+                            if stop_word in expense_topic:
+                                expense_topic = expense_topic.split(stop_word)[0]
+                        expense_topic = expense_topic.upper().strip()
+
+                        labelle = entry_labels[idx]
+                        converted_value = frais / rates.get(devis, 1.0)
+                        compte_comptable = compte_comptable_mapping.get(labelle.lower(), "Non défini")
+
+                        row = [compte_comptable, labelle, date, frais, devis, round(converted_value, 2), card, expense_topic]
+                        if len(row) == 8:
+                            extracted_data["Table"].append(row)
+                    except Exception as e:
+                        print(f"[WARN] Failed to parse entry: {entry} – {e}")
+
+    print("Extracted rows:", extracted_data["Table"])
 
     valid_rows = [row for row in extracted_data["Table"] if isinstance(row, list) and len(row) == 8]
 
-    df = pd.DataFrame(valid_rows, columns=[
-        "Compte Comptable", "Libelle", "Date", "Montant en Devise",
-        "Devise", "EUR", "Card", "Expense Topic"
-    ])
+    if valid_rows:
+        df = pd.DataFrame(valid_rows, columns=[
+            "Compte Comptable", "Libelle", "Date", "Montant en Devise",
+            "Devise", "EUR", "Card", "Expense Topic"
+        ])
+    else:
+        df = pd.DataFrame(columns=[
+            "Compte Comptable", "Libelle", "Date", "Montant en Devise",
+            "Devise", "EUR", "Card", "Expense Topic"
+        ])
 
     output_path = os.path.join(output_folder, output_filename)
 
@@ -233,7 +273,7 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
                 continue
         image_blocks.sort(key=lambda x: x["y"])
         for img_data in image_blocks:
-            filename = f"image_{len(images)+1}.{img_data['ext']}"
+            filename = f"image_{len(images) + 1}.{img_data['ext']}"
             output_image_path = os.path.join(image_folder, filename)
             with open(output_image_path, "wb") as f:
                 f.write(img_data["bytes"])
@@ -262,7 +302,7 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
     try:
         workbook = load_workbook(output_path)
         for idx, row in enumerate(valid_rows):
-            image_filename = os.path.basename(images[idx]) if idx < len(images) else f"Row_{idx+1}"
+            image_filename = os.path.basename(images[idx]) if idx < len(images) else f"Row_{idx + 1}"
             base_sheet_name = os.path.splitext(image_filename)[0][:31]
             sheet_name = base_sheet_name
             count = 1
@@ -293,14 +333,25 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
 
     return extracted_data, output_path
 
+
+
+
 def generate_response_html(extracted_data, excel_file_path):
-    # Generate HTML to display extracted data and converted Excel
+    import os
+
+    # Escape HTML special characters to prevent rendering issues
+    def escape_html(text):
+        return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    # Build table rows
     table_rows = "".join(
-        f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td>"
-        f"<td>{row[3]}</td><td>{row[4]}</td><td>{row[5]}</td>"
-        f"<td>{row[6]}</td><td>{row[7]}</td></tr>"
-        for row in extracted_data["Table"]
+        f"<tr><td>{escape_html(row[0])}</td><td>{escape_html(row[1])}</td><td>{escape_html(row[2])}</td>"
+        f"<td>{escape_html(row[3])}</td><td>{escape_html(row[4])}</td><td>{escape_html(row[5])}</td>"
+        f"<td>{escape_html(row[6])}</td><td>{escape_html(row[7])}</td></tr>"
+        for row in extracted_data.get("Table", [])
     )
+
+    # Start building the HTML response
     return f'''
     <!doctype html>
     <html lang="en">
@@ -316,12 +367,15 @@ def generate_response_html(extracted_data, excel_file_path):
                 padding: 20px;
             }}
             .container {{
-                max-width: 800px;
+                max-width: 900px;
                 margin: auto;
                 background: white;
-                padding: 20px;
-                border-radius: 8px;
-                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                padding: 30px;
+                border-radius: 10px;
+                box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            }}
+            h1, h2 {{
+                color: #333;
             }}
             table {{
                 width: 100%;
@@ -331,23 +385,28 @@ def generate_response_html(extracted_data, excel_file_path):
             table, th, td {{
                 border: 1px solid #ddd;
                 text-align: left;
-                padding: 8px;
+                padding: 10px;
             }}
             th {{
                 background-color: #007bff;
                 color: white;
+                font-weight: bold;
             }}
-            a {{
-                display: block;
-                margin-top: 20px;
+            tr:nth-child(even) {{
+                background-color: #f9f9f9;
+            }}
+            a.download-link {{
+                display: inline-block;
+                margin-top: 30px;
                 text-align: center;
                 color: white;
                 background-color: #007bff;
-                padding: 10px;
+                padding: 12px 20px;
                 text-decoration: none;
-                border-radius: 4px;
+                border-radius: 5px;
+                font-size: 16px;
             }}
-            a:hover {{
+            a.download-link:hover {{
                 background-color: #0056b3;
             }}
         </style>
@@ -355,13 +414,13 @@ def generate_response_html(extracted_data, excel_file_path):
     <body>
         <div class="container">
             <h1>Extracted Data</h1>
-            <p><strong>Name:</strong> {extracted_data["Libelle"]}</p>
-            <p><strong>Department:</strong> {extracted_data["Department"]}</p>
-            
-            <h2>Table Data</h2>
+            <p><strong>Name:</strong> {escape_html(extracted_data.get("Libelle", "N/A"))}</p>
+            <p><strong>Department:</strong> {escape_html(extracted_data.get("Department", "N/A"))}</p>
+
+            <h2>Expense Table</h2>
             <table>
                 <thead>
-                      <tr>
+                    <tr>
                         <th>Compte Comptable</th>
                         <th>Libelle</th>
                         <th>Date</th>
@@ -373,10 +432,11 @@ def generate_response_html(extracted_data, excel_file_path):
                     </tr>
                 </thead>
                 <tbody>
-                    {table_rows}
+                    {table_rows or "<tr><td colspan='8'>No data available.</td></tr>"}
                 </tbody>
             </table>
-            <a href="/download?file={os.path.basename(excel_file_path)}">Download Excel File</a>
+
+            <a class="download-link" href="/download?file={os.path.basename(excel_file_path)}">⬇ Download Excel File</a>
         </div>
     </body>
     </html>
