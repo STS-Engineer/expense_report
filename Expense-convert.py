@@ -142,7 +142,7 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
         "fuel": 625110, "peage": 625130, "entretien vehicule": 625140,
         "hotel": 625200, "repas restaurant": 625300, "reception": 625700,
         "affranchissement": 626000, "telephonie": 626100, "achats divers": 606300,
-        "food": 625300
+        "food": 625300, "other": 606300
     }
 
     try:
@@ -163,7 +163,7 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
         text = page.extract_text()
         if not text:
             continue
-        # Extract name and department
+
         name_match = re.search(r"NAME\s*:?[\s]*([A-Za-zÀ-ÿ\s]+?)\s+DEPARTMENT\s*:?[\s]*([A-Za-zÀ-ÿ\s]+)", text,
                                re.IGNORECASE)
         if name_match:
@@ -178,28 +178,29 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
 
         for line in lines:
             buffer += " " + line.strip()
-            if re.search(r"\d{1,2}\s+\w+\s+\d{4}.*\d+.*(EUR|USD|MAD).*Card", buffer, re.IGNORECASE):
+            if re.search(r"\d{1,2}\s+\w+\s+\d{4}.*\d+.*(EUR|USD|MAD|TND).*Card", buffer, re.IGNORECASE):
                 merged_lines.append(buffer.strip())
                 buffer = ""
         if buffer:
             merged_lines.append(buffer.strip())
 
-        expense_keywords = ["Food", "Taxi", "Hotel", "Train", "Plane", "Parking", "Fuel", "Peage", "Entretienvehicule", "Reception", "Affranchissement", "Telephonie", "Achatsdivers"]
+        expense_keywords = ["Food", "Taxi", "Hotel", "Train", "Plane", "Parking", "Fuel", "Peage", "Entretienvehicule", "Reception", "Affranchissement", "Telephonie", "Achatsdivers", "Other"]
 
         for merged_line in merged_lines:
             merged_line = re.sub(r'\s+', '', merged_line).strip()
-            print("Merged line:", merged_line)
-
             split_pattern = r'(?=(' + '|'.join(expense_keywords) + r'))'
             entries = re.split(split_pattern, merged_line)
             entry_blocks = []
             entry_labels = []
             for i in range(1, len(entries), 2):
-                entry_blocks.append(entries[i+1].strip())
+                entry_blocks.append(entries[i + 1].strip())
                 entry_labels.append(entries[i].strip())
 
             for idx, entry in enumerate(entry_blocks):
-                match = re.search(r"(?i)(\d{1,2})([A-Za-z]+)(\d{4})([\d.,]+)(EUR|USD|MAD)(Card|offCard)([A-Z]+)", entry)
+                match = re.search(
+                    r"(?i)(\d{1,2})([A-Za-z]+)(\d{4})([\d.,]+)(?:B\.?commission([\d.,]+))?([A-Z]{3})(Card|offCard)([A-Z]+)",
+                    entry
+                )
 
                 if match:
                     try:
@@ -208,10 +209,11 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
                         year = match.group(3)
                         date = f"{day} {month} {year}"
                         frais = float(match.group(4).replace(',', '.'))
-                        devis = match.group(5).upper()
-                        card = match.group(6).strip().capitalize()
-
-                        expense_topic = match.group(7).strip().upper()
+                        commission_str = match.group(5)
+                        commission = float(commission_str.replace(',', '.')) if commission_str else 0.0
+                        devis = match.group(6).upper()
+                        card = match.group(7).strip().capitalize()
+                        expense_topic = match.group(8).strip().upper()
 
                         for stop_word in ["AVOCARBON", "FRANCE", "TOTAL", "DATE", "PHONE"]:
                             if stop_word in expense_topic:
@@ -219,29 +221,24 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
                         expense_topic = expense_topic.upper().strip()
 
                         labelle = entry_labels[idx]
-                        converted_value = frais / rates.get(devis, 1.0)
+                        converted_value = frais / rates.get(devis, 1.0) if rates.get(devis) else frais
                         compte_comptable = compte_comptable_mapping.get(labelle.lower(), "Non défini")
 
-                        row = [compte_comptable, labelle, date, frais, devis, round(converted_value, 2), card, expense_topic]
-                        if len(row) == 8:
+                        row = [compte_comptable, labelle, date, frais, commission, devis, round(converted_value, 2), card, expense_topic]
+                        if len(row) == 9:
                             extracted_data["Table"].append(row)
                     except Exception as e:
                         print(f"[WARN] Failed to parse entry: {entry} – {e}")
 
-    print("Extracted rows:", extracted_data["Table"])
+    valid_rows = [row for row in extracted_data["Table"] if isinstance(row, list) and len(row) == 9]
 
-    valid_rows = [row for row in extracted_data["Table"] if isinstance(row, list) and len(row) == 8]
-
-    if valid_rows:
-        df = pd.DataFrame(valid_rows, columns=[
-            "Compte Comptable", "Libelle", "Date", "Montant en Devise",
-            "Devise", "EUR", "Card", "Expense Topic"
-        ])
-    else:
-        df = pd.DataFrame(columns=[
-            "Compte Comptable", "Libelle", "Date", "Montant en Devise",
-            "Devise", "EUR", "Card", "Expense Topic"
-        ])
+    df = pd.DataFrame(valid_rows, columns=[
+        "Compte Comptable", "Libelle", "Date", "Montant en Devise", "B.commission",
+        "Devise", "EUR", "Card", "Expense Topic"
+    ]) if valid_rows else pd.DataFrame(columns=[
+        "Compte Comptable", "Libelle", "Date", "Montant en Devise", "B.commission",
+        "Devise", "EUR", "Card", "Expense Topic"
+    ])
 
     output_path = os.path.join(output_folder, output_filename)
 
@@ -288,6 +285,7 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
         total_row = {col: "" for col in df.columns}
         total_row["Libelle"] = "TOTAL"
         total_row["Montant en Devise"] = df["Montant en Devise"].sum()
+        total_row["B.commission"] = df["B.commission"].sum()
         total_row["EUR"] = df["EUR"].sum()
         df.loc[len(df.index)] = total_row
 
@@ -311,7 +309,7 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
                 count += 1
             sheet = workbook.create_sheet(title=sheet_name)
             headers = [
-                "Compte Comptable", "Libelle", "Date", "Montant en Devise",
+                "Compte Comptable", "Libelle", "Date", "Montant en Devise", "B.commission",
                 "Devise", "EUR", "Card", "Expense Topic", "Image Filename"
             ]
             row_with_filename = row + [image_filename if idx < len(images) else ""]
@@ -336,6 +334,7 @@ def process_pdf_to_excel_with_images(pdf_path, output_filename, fixer_api_url, f
 
 
 
+
 def generate_response_html(extracted_data, excel_file_path):
     import os
 
@@ -347,7 +346,7 @@ def generate_response_html(extracted_data, excel_file_path):
     table_rows = "".join(
         f"<tr><td>{escape_html(row[0])}</td><td>{escape_html(row[1])}</td><td>{escape_html(row[2])}</td>"
         f"<td>{escape_html(row[3])}</td><td>{escape_html(row[4])}</td><td>{escape_html(row[5])}</td>"
-        f"<td>{escape_html(row[6])}</td><td>{escape_html(row[7])}</td></tr>"
+        f"<td>{escape_html(row[6])}</td><td>{escape_html(row[7])}</td><td>{escape_html(row[8])}</td></tr>"
         for row in extracted_data.get("Table", [])
     )
 
@@ -411,34 +410,34 @@ def generate_response_html(extracted_data, excel_file_path):
             }}
         </style>
     </head>
-    <body>
-        <div class="container">
-            <h1>Extracted Data</h1>
-            <p><strong>Name:</strong> {escape_html(extracted_data.get("Libelle", "N/A"))}</p>
-            <p><strong>Department:</strong> {escape_html(extracted_data.get("Department", "N/A"))}</p>
+<div class="container">
+    <h1>Extracted Data</h1>
+    <p><strong>Name:</strong> {escape_html(extracted_data.get("Libelle", "N/A"))}</p>
+    <p><strong>Department:</strong> {escape_html(extracted_data.get("Department", "N/A"))}</p>
 
-            <h2>Expense Table</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Compte Comptable</th>
-                        <th>Libelle</th>
-                        <th>Date</th>
-                        <th>Montant en Devise</th>
-                        <th>Devise</th>
-                        <th>EUR</th>
-                        <th>Card</th>
-                        <th>Expense Topic</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {table_rows or "<tr><td colspan='8'>No data available.</td></tr>"}
-                </tbody>
-            </table>
+    <h2>Expense Table</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Compte Comptable</th>
+                <th>Libelle</th>
+                <th>Date</th>
+                <th>Montant en Devise</th>
+                <th>B.commission</th>
+                <th>Devise</th>
+                <th>EUR</th>
+                <th>Card</th>
+                <th>Expense Topic</th>
+            </tr>
+        </thead>
+        <tbody>
+            {table_rows or "<tr><td colspan='9'>No data available.</td></tr>"}
+        </tbody>
+    </table>
 
-            <a class="download-link" href="/download?file={os.path.basename(excel_file_path)}">⬇ Download Excel File</a>
-        </div>
-    </body>
+    <a class="download-link" href="/download?file={os.path.basename(excel_file_path)}">⬇ Download Excel File</a>
+</div>
+
     </html>
     '''
 
